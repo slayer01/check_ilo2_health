@@ -188,7 +188,7 @@ our $p = Monitoring::Plugin->new(
   [ -o|--powerredundancy ] [ -b|--locationlabel ] [ -l|--eventlogcheck]
   [ -i|--ignorelinkdown ] [ -x|--ignorebatterymissing ] [ -s|--sslv3 ]
   [ -t <timeout> ] [ -r <retries> ] [ -g|--getinfos ] [ --sslopts ]
-  [ -U|--ignorelinkunknown ] [ -v|--verbose ] ",
+  [ -U|--ignorelinkunknown ] [ -v|--verbose ] [ -z|--ignorestoragestatus ]",
         version => $VERSION,
         blurb => 'This plugin checks the health status on a remote iLO2|3|4|5 device
 and will return OK, WARNING or CRITICAL. iLO (integrated Lights-Out)
@@ -338,6 +338,13 @@ $p->add_arg(
   Some firmware may need --sslopts 'SSL_verify_mode => SSL_VERIFY_NONE, SSL_version => "TLSv1"'.},
 );
 
+$p->add_arg(
+  spec => 'ignorestoragestatus|z',
+  help =>
+  qq{-z, --ignorestoragestatus
+  Ignore storage status, still check disks.},
+);
+
 # parse arguments
 $p->getopts;
 
@@ -386,6 +393,7 @@ my $sslopts = 'SSL_verify_mode => SSL_VERIFY_NONE';
 our @product;
 our @serial;
 our @sname;
+my $ignorestoragestatus = defined($p->opts->ignorestoragestatus) ? 1 : 0;
 
 $message = "(Board-Version: $iloboardversion) ";
 
@@ -605,16 +613,14 @@ my $componentstate;
 foreach (keys %{$health}) {
   $componentstate = $health->{$_}[0]->{'STATUS'};
   if ( defined($componentstate) && ( $componentstate !~ m/^Ok$|^OTHER$|^NOT APPLICABLE$/i ) ) {
-    if ($_ eq 'STORAGE') {
-      if ( ref($raidcontroller) ) {
+    if ( $_ eq 'STORAGE' && $ignorestoragestatus && ( $componentstate =~ m/^Degraded$/i ) ) {
+      next;
+    }
+    elsif ( $_ eq 'STORAGE' && ref($raidcontroller) ) {
        # For iLO4 we can look at the raid controller to get a more detailed
        # status, so just log a WARNING unless we find something CRITICAL
        # later on.
        $return = "WARNING" unless ( $return eq "CRITICAL" );
-      }
-      else {
-       $return = "CRITICAL";
-      }
     }
     elsif ( ( $_ eq 'BATTERY' ) && $ignorebatterymissing && ( $componentstate =~ m/^Not Installed$/i ) ) {
       next;
@@ -762,7 +768,7 @@ if ( ref($raidcontroller) ) {
     foreach ( @{$_->{'LOGICAL_DRIVE'}} ) {
       my $ldlabel = $_->{'LABEL'}[0]->{'VALUE'};
       my $ldstatus = $_->{'STATUS'}[0]->{'VALUE'};
-      if($ldstatus ne 'OK') {
+      if($ldstatus ne 'OK' && !$ignorestoragestatus) {
               $message .= "SmartArray $ctrllabel LD $ldlabel: $ldstatus, ";
               if($ldstatus eq 'Degraded (Rebuilding)' || $ldstatus eq 'Degraded (Recovering)') {
                 $return = "WARNING" unless ( $return eq "CRITICAL" );
